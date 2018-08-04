@@ -1,0 +1,500 @@
+<html>
+
+<!-- 兼容性处理 -->
+<script>
+//addEventListener的IE8兼容,网上查的
+(function() {
+	  if (!Element.prototype.addEventListener) {
+	    var eventListeners=[];
+	    
+	    var addEventListener=function(type,listener /*, useCapture (will be ignored) */) {
+	      var self=this;
+	      var wrapper=function(e) {
+	        e.target=e.srcElement;
+	        e.currentTarget=self;
+	        if (typeof listener.handleEvent != 'undefined') {
+	          listener.handleEvent(e);
+	        } else {
+	          listener.call(self,e);
+	        }
+	      };
+	      if (type=="DOMContentLoaded") {
+	        var wrapper2=function(e) {
+	          if (document.readyState=="complete") {
+	            wrapper(e);
+	          }
+	        };
+	        document.attachEvent("onreadystatechange",wrapper2);
+	        eventListeners.push({object:this,type:type,listener:listener,wrapper:wrapper2});
+	        
+	        if (document.readyState=="complete") {
+	          var e=new Event();
+	          e.srcElement=window;
+	          wrapper2(e);
+	        }
+	      } else {
+	        this.attachEvent("on"+type,wrapper);
+	        eventListeners.push({object:this,type:type,listener:listener,wrapper:wrapper});
+	      }
+	    };
+	    var removeEventListener=function(type,listener /*, useCapture (will be ignored) */) {
+	      var counter=0;
+	      while (counter<eventListeners.length) {
+	        var eventListener=eventListeners[counter];
+	        if (eventListener.object==this && eventListener.type==type && eventListener.listener==listener) {
+	          if (type=="DOMContentLoaded") {
+	            this.detachEvent("onreadystatechange",eventListener.wrapper);
+	          } else {
+	            this.detachEvent("on"+type,eventListener.wrapper);
+	          }
+	          eventListeners.splice(counter, 1);
+	          break;
+	        }
+	        ++counter;
+	      }
+	    };
+	    Element.prototype.addEventListener=addEventListener;
+	    Element.prototype.removeEventListener=removeEventListener;
+	    if (HTMLDocument) {
+	      HTMLDocument.prototype.addEventListener=addEventListener;
+	      HTMLDocument.prototype.removeEventListener=removeEventListener;
+	    }
+	    if (Window) {
+	      Window.prototype.addEventListener=addEventListener;
+	      Window.prototype.removeEventListener=removeEventListener;
+	    }
+	  }
+	})();
+</script>
+
+<!-- 变量声明 -->
+<script>
+//考试相关
+var exam_data;//题目内容,由服务器来赋值
+
+var qnum_current=1;//当前题号
+var ans_current='';//当前题目选择的答案
+var ans_arr=[];//答案数组(记录用户选择的答案,下标是题号,从1开始)
+var ans_string='';//答案字符串,比如'ABTF',最后发送给服务器用来判分
+
+var choice_cnt;//选择题总数
+var judge_cnt;//判断题总数
+
+//系统相关
+var exam_click_registered=false;//点击事件已注册(初始为假,注册后为真)
+</script>
+
+<!-- 核心函数 -->
+<script>
+
+//提交试卷
+function submitPaper(){
+	ans_string='';
+	for(i=1;i<(choice_cnt+judge_cnt+1);i++){
+		if(ans_arr[i]){
+			ans_string+=ans_arr[i];
+		}else{
+			alert("有题目未完成,不能提交. ");
+			return;
+		}
+	}
+	//alert("你的答案:"+ans_string);
+	
+	if(!window.confirm('你确定要提交试卷吗?')){
+		return;
+	}
+	
+	
+	var xmlhttp=new XMLHttpRequest();
+	xmlhttp.open("get","/submit_paper.php?ans="+ans_string,true);
+	
+	xmlhttp.onreadystatechange=function(){
+		if(xmlhttp.readyState === 4 && xmlhttp.status === 200) {
+			var resObj=JSON.parse(xmlhttp.responseText);
+			/*
+			此处协议:
+				resObj.flag: 标记字符串 值为ok/fail
+				resObj.score: 整型 得分
+				resObj.msg: json对象 每一个元素都是一个如下格式的json:
+					{'qnum'=1,'key'='A'};
+					qnum:题号
+					key:正确答案
+			*/
+			
+			
+			switch(resObj.flag){
+			case 'ok':
+				var wrongs=resObj.msg;
+				var msg='你的分数是:';
+				msg=msg+resObj.score+'分';
+				if(resObj.score==100){
+					msg+='!';
+				}else{
+					msg+=',';
+					for(var i in wrongs){
+						msg=msg+' 第'+wrongs[i].qnum+'题正确答案是'+wrongs[i].key;
+						msg=msg+'而非'+ans_arr[wrongs[i].qnum];
+					}
+					msg+='.';
+					
+				}
+				alert(msg);
+				break;
+			default:
+				alert(resObj.msg);
+			}
+			
+		}
+	};
+	xmlhttp.send(null);
+	
+}
+
+//跳转到指定题号的题目,qnum是题号,从1开始
+function gotoQ(qnum){
+	var examDiv=document.getElementById('exam');
+	if(examDiv.style.display!=='')
+		examDiv.style.display='';
+	var timePrompt=examDiv.children[0];
+	var head=examDiv.children[1];
+	var part1=examDiv.children[2];
+	var part2=examDiv.children[3];
+	var lastBtn=examDiv.children[4];
+	var nextBtn=examDiv.children[5];
+		
+	if(isNaN(qnum)){
+		qnum=1;
+	}
+	
+	if(qnum==1){
+		lastBtn.disabled=true;
+	}else if(lastBtn.disabled===true){
+		lastBtn.disabled=false;
+	}
+	
+	if(qnum==(choice_cnt+judge_cnt)){
+		nextBtn.value='提交';
+	}else{
+		nextBtn.value='下一题';
+	}
+	
+	if(qnum<1 || qnum>(choice_cnt+judge_cnt)){
+		return;
+	}
+	
+	ans_arr[qnum_current]=ans_current;//保存当前题目的答案
+	qnum_current=qnum;//跳转题目
+	ans_current=ans_arr[qnum_current];//读取当前题目的答案
+	
+	head.innerHTML="第"+qnum_current+"题";
+	
+	if(qnum<=choice_cnt){
+		//选择题
+		head.innerHTML="选择题(共"+choice_cnt+"题) 第"+qnum+"题";
+		
+		
+		part2.style.display='none';
+		
+		var questionDiv=part1.children[0];
+		var optionsDiv=part1.children[1];
+		
+		var question=exam_data.choice[qnum-1].question;
+		var opt_a=exam_data.choice[qnum-1].opt_a;
+		var opt_b=exam_data.choice[qnum-1].opt_b;
+		var opt_c=exam_data.choice[qnum-1].opt_c;
+		var opt_d=exam_data.choice[qnum-1].opt_d;
+		
+		questionDiv.innerHTML=question;
+		optionsDiv.children[1].innerHTML=opt_a;
+		optionsDiv.children[3].innerHTML=opt_b;
+		optionsDiv.children[5].innerHTML=opt_c;
+		optionsDiv.children[7].innerHTML=opt_d;
+		
+		//下面和radio相关的部分是用来通过脚本自动选中已经做过的题目的选项的
+		var radio=-1;
+		switch(ans_arr[qnum_current]){
+		case 'A':
+			radio=0;
+			break;
+		case 'B':
+			radio=2;
+			break;
+		case 'C':
+			radio=4;
+			break;
+		case 'D':
+			radio=6;
+			break;
+		}
+		if(radio!=-1)
+			optionsDiv.children[radio].checked=true;
+		else{
+			optionsDiv.children[0].checked=false;
+			optionsDiv.children[2].checked=false;
+			optionsDiv.children[4].checked=false;
+			optionsDiv.children[6].checked=false;
+		}
+		
+		part1.style.display='';
+	}else{
+		//判断题
+		head.innerHTML="判断题(共"+judge_cnt+"题) 第"+(qnum-choice_cnt)+"题";
+		
+		part1.style.display='none';
+		var questionDiv=part2.children[0];
+		var optionsDiv=part2.children[1];
+		var question=exam_data.judge[qnum-choice_cnt-1].question;
+		
+		questionDiv.innerHTML=question;
+
+		var radio=-1;
+		switch(ans_arr[qnum_current]){
+		case 'T':
+			radio=0;
+			break;
+		case 'F':
+			radio=2;
+			break;
+		}
+		if(radio!=-1)
+			optionsDiv.children[radio].checked=true;
+		else{
+			optionsDiv.children[0].checked=false;
+			optionsDiv.children[2].checked=false;
+		}
+		part2.style.display='';
+	}
+}
+
+//向服务器发送开始考试的请求
+function onExamRequest(){
+	setLayout('exam_loading');
+	var xmlhttp=new XMLHttpRequest();
+	xmlhttp.open("get","/exam_content.php",true);
+	
+	xmlhttp.onreadystatechange=function(){
+		if(xmlhttp.readyState === 4 && xmlhttp.status === 200) {
+			var resObj=JSON.parse(xmlhttp.responseText);
+			/*
+			responseText是服务器返回的结果,它是一个json字符串,解析后内容如下:
+				//flag,值为'ok'或'fail'
+				//msg,当请求顺利完成时(ok),值为一个json字符串,表示考试题目
+				//当请求失败时(fail).值为失败信息.
+			*/
+			if(resObj.flag!='ok'){
+				alert(resObj.msg);
+				setLayout('before_exam');
+				return
+			}
+			
+			setLayout('exam');
+			exam_data=JSON.parse(resObj.msg);
+			
+			choice_cnt=exam_data.choice.length;
+			judge_cnt=exam_data.judge.length;
+			
+			//初始化
+			ans_arr=[];
+			ans_current='';
+			qnum_current=1;
+			
+			gotoQ(1);
+			
+			//注册点击事件(选项\上一题\下一题)
+			if(!exam_click_registered){
+				exam_click_registered=true;//防止重复注册事件
+				document.getElementById('exam').addEventListener("click",function(e){
+					var value=e.target.value;
+					//alert(value);
+					if(value=='A' || value=='B' || 
+					   value=='C' || value=='D' ||
+					   value=='T' || value=='F')
+					{
+						//alert(value);
+						ans_current=value;
+					}else if(value=='下一题'){
+						gotoQ(qnum_current+1);
+					}else if(value=='上一题'){
+						gotoQ(qnum_current-1);
+					}else if(value=='提交'){
+						ans_arr[qnum_current]=ans_current;
+						submitPaper();
+					}
+				});
+			}
+		}
+	};
+	xmlhttp.send(null);
+}
+</script>
+
+<!-- 登录\退出按钮的响应函数 -->
+<script>
+function onLogoutSubmit(){
+	setLayout('login');
+	
+	var xmlhttp=new XMLHttpRequest();
+	xmlhttp.open("post","/login_handler.php",true);
+	
+	xmlhttp.onreadystatechange=function(){
+		if(xmlhttp.readyState === 4 && xmlhttp.status === 200) {
+			document.getElementById('prompt').innerHTML="请登录";
+		}
+	};
+	xmlhttp.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+	var data="submit=退出";
+	xmlhttp.send(data);
+}
+
+function onLoginSubmit(){
+	var username=document.getElementById('login_username').value;
+	var password=document.getElementById('login_password').value;
+	
+	//此处还需验证username和password
+	
+	var xmlhttp=new XMLHttpRequest();
+	xmlhttp.open("post","/login_handler.php",true);
+	
+	xmlhttp.onreadystatechange=function(){
+		//alert(xmlhttp.readyState+","+xmlhttp.status);
+		if(xmlhttp.readyState === 4 && xmlhttp.status === 200) {
+			var response=xmlhttp.responseText;
+			if(response==='ok'){
+				document.getElementById('prompt').innerHTML="登录成功!";
+				setLayout('before_exam');
+			}else if(response==='fail'){
+				document.getElementById('prompt').innerHTML="登录失败,用户名或密码不正确!";
+				document.getElementById('login').children[2].disabled=false;
+			}else{
+				document.getElementById('prompt').innerHTML=response;
+				document.getElementById('login').children[2].disabled=false;
+				//alert("response:"+response);
+			}
+			
+		}
+	};
+	
+	xmlhttp.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+	
+	var data="submit=登录&username="+username+"&password="+password;
+
+	xmlhttp.send(data);
+	document.getElementById('login').children[2].disabled=true;
+	//hideDiv('div_login');
+}
+</script>
+
+<!-- 页面布局 变量及函数 -->
+<script>
+var layout_arr=['login','exam_loading','before_exam','logout','exam'];
+
+function hideDiv(id){
+	document.getElementById(id).style.display = "none";
+}
+
+function showDiv(id){
+	document.getElementById(id).style.display = "";
+}
+
+function showOnly(arr){
+	for(var i=0;i<layout_arr.length;i++){
+		hideDiv(layout_arr[i]);
+	}
+	for(i=0;i<arr.length;i++){
+		showDiv(arr[i]);
+	}
+}
+
+
+function setLayout(layout){
+	switch(layout){
+	case 'login':
+		showOnly(['login']);
+		document.getElementById('login').children[2].disabled=false;
+		break;
+	case 'before_exam':
+		showOnly(['logout','before_exam']);
+		break;
+	case 'exam_loading':
+		showOnly(['logout','exam_loading']);
+		break;
+	case 'exam':
+		showOnly(['logout','exam']);
+		break;
+	case 'exam_finish':
+		break;
+	}
+}
+</script>
+
+<body>
+<h1>组名还没想好</h1>
+<div id="userState"></div>
+<div id="prompt">hello?</div>
+
+<div id="login" style="display:none;">
+<input type="text" id="login_username">
+<input type="password" id="login_password">
+<input type="button" id="login_submit" value="登录" onclick="onLoginSubmit();">
+</div>
+
+<div id="exam_loading" style="display:none;">试题加载中...</div>
+
+<div id="before_exam" style="display:none;">
+<input type="button" value="开始考试" onclick="onExamRequest();">
+</div>
+
+<div id="logout" style="display:none;">
+<input type="button" id="logout_submit" value="退出" onclick="onLogoutSubmit();">
+</div>
+
+<div id="exam" style="display:none;">
+	<div>时间提示</div>
+	<div>题目</div>
+	<div style="display:none;">
+		<div>问题</div>
+		<div>
+		<input type="radio" value="A" name="exam_options"><span></span>
+		<input type="radio" value="B" name="exam_options"><span></span>
+		<input type="radio" value="C" name="exam_options"><span></span>
+		<input type="radio" value="D" name="exam_options"><span></span>
+		</div>
+	</div>
+	<div style="display:none;">
+		<div>问题</div>
+		<div>
+		<input type="radio" value="T" name="exam_judge"><span>正确</span>
+		<input type="radio" value="F" name="exam_judge"><span>错误</span>
+		</div>
+	</div>
+	<input type="button" value="上一题">
+	<input type="button" value="下一题">
+</div>
+
+<div>
+
+</div>
+
+
+</body>
+
+<!-- 页面初始化 -->
+<script>
+
+/*
+ flag是页面刚打开时服务器传过来的一个变量,用来标记用户登录状态
+ 在下面页面初始化的时候用到flag,其他地方没有任何用处
+ */
+
+document.getElementById('userState').innerHTML=flag;
+switch(flag){
+case 'not_login':
+	setLayout('login');
+	break;
+case 'already_login':
+	setLayout('before_exam');
+	break;
+}
+</script>
+
+</html>
